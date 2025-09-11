@@ -1,0 +1,15 @@
+
+/avatar/common/__pycache__
+/.vscode
+/avatar/common/nets/__pycache__
+/avatar/common/utils/__pycache__
+/avatar/common/utils/human_model_files
+/avatar/data/NeuMan/__pycache__
+/avatar/data/NeuMan/data/gyeongsik
+/avatar/main/__pycache__
+avatar/main/jungkook_standing_next_to_you.mp4
+/avatar/main/neutral_pose
+/motions
+/diff-gaussian-rasterization-depth
+/avatar/output/model_dump/gyeongsik
+/avatar/output/log
