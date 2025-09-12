@@ -563,6 +563,14 @@ class HumanGaussian(nn.Module):
         # Gaussians and offsets
         rotation = matrix_to_quaternion(torch.eye(3).float().cuda()[None,:,:].repeat(smpl_x.vertex_num_upsampled,1,1)) # constant rotation
         opacity = torch.ones((smpl_x.vertex_num_upsampled,1)).float().cuda() # constant opacity
+        # torch.set_printoptions(precision=10)
+        # print(mean_3d)
+        # print(opacity)
+        # print(scale)
+        # print(rotation)
+        # print(rgb)
+        # print(mean_3d_refined)
+        # print(mean_3d_refined)
         assets = {
                 'mean_3d': mean_3d, 
                 'opacity': opacity, 
