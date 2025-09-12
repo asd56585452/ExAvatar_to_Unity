@@ -6,6 +6,44 @@ from pytorch3d.renderer import PerspectiveCameras, RasterizationSettings, MeshRa
 from pytorch3d.renderer import TexturesUV
 from config import cfg
 
+class MyGroupNorm(nn.Module):
+    """
+    一個自訂的 GroupNorm 層，專門處理 2D 輸入以相容 ONNX 導出。
+    它在內部將 2D 輸入 (N, C) 暫時轉為 4D (N, C, 1, 1)，
+    執行 GroupNorm 後再轉回 2D。
+    對於 3D 或更高維度的輸入，它的行為和標準 nn.GroupNorm 完全一樣。
+    """
+    def __init__(self, num_groups, num_channels, eps=1e-5, affine=True):
+        super(MyGroupNorm, self).__init__()
+        # 建立一個標準的 GroupNorm 層實例
+        self.gn = nn.GroupNorm(num_groups, num_channels, eps=eps, affine=affine)
+
+    def forward(self, x):
+        # 檢查輸入張量的維度
+        if x.dim() == 2:
+            # 如果是 2D 輸入 [N, C]
+            # 1. 增加維度 -> [N, C, 1, 1]
+            reshaped_x = x.unsqueeze(-1).unsqueeze(-1)
+            # 2. 執行標準的 GroupNorm
+            normed_x = self.gn(reshaped_x)
+            # 3. 壓平維度 -> [N, C]
+            return normed_x.squeeze(-1).squeeze(-1)
+        else:
+            # 如果是 3D, 4D, 5D... 輸入，直接執行
+            return self.gn(x)
+
+    # 讓這個模組的 state_dict 和內部的 gn 層保持一致
+    # 這一步驟是可選的，但能讓結構更清晰
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        # 將權重直接載入到 self.gn 中
+        self.gn._load_from_state_dict(state_dict, prefix, local_metadata, strict,
+                                      missing_keys, unexpected_keys, error_msgs)
+
+    def state_dict(self, *args, **kwargs):
+        # 回傳 self.gn 的 state_dict
+        return self.gn.state_dict(*args, **kwargs)
+
 def make_linear_layers(feat_dims, relu_final=True, use_gn=False):
     layers = []
     for i in range(len(feat_dims)-1):
@@ -14,7 +52,7 @@ def make_linear_layers(feat_dims, relu_final=True, use_gn=False):
         # Do not use ReLU for final estimation
         if i < len(feat_dims)-2 or (i == len(feat_dims)-2 and relu_final):
             if use_gn:
-                layers.append(nn.GroupNorm(4, feat_dims[i+1]))
+                layers.append(MyGroupNorm(4, feat_dims[i+1]))
             layers.append(nn.ReLU(inplace=True))
 
     return nn.Sequential(*layers)

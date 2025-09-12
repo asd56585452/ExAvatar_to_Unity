@@ -1,4 +1,34 @@
 import torch
+from torch.onnx import register_custom_op_symbolic
+from torch.onnx.symbolic_helper import parse_args
+
+# --- 為 aten::sinc 定義翻譯規則 (修正版) ---
+@parse_args("v")
+def symbolic_sinc(g, x):
+    """
+    Symbolic function for aten::sinc.
+    This function defines how to translate torch.sinc(x) into basic ONNX operators.
+    This version is robust to different dtypes (float, half, double).
+    """
+    # 1. 建立標準的 float32 常數
+    zero_const_float = g.op("Constant", value_t=torch.tensor(0.0, dtype=torch.float32))
+    one_const_float = g.op("Constant", value_t=torch.tensor(1.0, dtype=torch.float32))
+
+    # 2. 使用 CastLike 將常數轉換為與輸入 x 相同的資料類型
+    zero_const = g.op("CastLike", zero_const_float, x)
+    one_const = g.op("CastLike", one_const_float, x)
+    
+    # 3. 執行原始的數學邏輯
+    sin_x = g.op("Sin", x)
+    div_result = g.op("Div", sin_x, x)
+    is_zero = g.op("Equal", x, zero_const)
+    
+    # 4. 使用 Where 運算子處理 x=0 的情況
+    return g.op("Where", is_zero, one_const, div_result)
+
+# 將我們的翻譯規則註冊給 ONNX 匯出器
+register_custom_op_symbolic("aten::sinc", symbolic_sinc, 9)
+import torch
 import json
 import argparse
 import os.path as osp
@@ -43,16 +73,38 @@ class ModelWrapper(torch.nn.Module):
             cam_param[key] = cam_inputs_tuple[i]
 
         # 呼叫原始模型的 human_gaussian 部分
-        human_asset, _, _, _ = self.model.module.human_gaussian(smplx_param, cam_param)
+        # human_asset, _, _, _ = self.model.module.human_gaussian(smplx_param, cam_param)
+        # extract triplane feature
+        tri_feat = self.model.module.human_gaussian.extract_tri_feature()
+      
+        # get Gaussian assets
+        geo_feat = self.model.module.human_gaussian.geo_net(tri_feat)
+        mean_offset = self.model.module.human_gaussian.mean_offset_net(geo_feat) # mean offset of Gaussians
+        scale = self.model.module.human_gaussian.scale_net(geo_feat) # scale of Gaussians
+        rgb = self.model.module.human_gaussian.rgb_net(tri_feat) # rgb of Gaussians
+        mean_3d_offset =  mean_offset # 大 pose
+ 
+        # get pose-dependent Gaussian assets
+        mean_offset_offset, scale_offset = self.model.module.human_gaussian.forward_geo_network(tri_feat, smplx_param)
+        scale, scale_refined = torch.exp(scale).repeat(1,3), torch.exp(scale+scale_offset).repeat(1,3)
+        mean_combined_offset, mean_offset_offset = self.model.module.human_gaussian.get_mean_offset_offset(smplx_param, mean_offset_offset)
+        mean_3d_refined_offset = mean_3d_offset + mean_combined_offset # 大 pose
+
+        # smplx facial expression offset
+        smplx_expr_offset = (smplx_param['expr'][None,None,:] * self.model.module.human_gaussian.expr_dirs).sum(2)
+        mean_3d_offset = mean_3d_offset + smplx_expr_offset # 大 pose
+        mean_3d_refined_offset = mean_3d_refined_offset + smplx_expr_offset # 大 pose
+
+        rgb = (torch.tanh(rgb) + 1) / 2
         
         # 根據 module.py 的定義，human_asset 是一個字典。
         # ONNX 導出需要返回一個張量或張量的元組，因此我們提取字典中的所有張量。
         return (
-            human_asset['mean_3d'],
-            human_asset['opacity'],
-            human_asset['scale'],
-            human_asset['rotation'],
-            human_asset['rgb']
+            mean_3d_offset,
+            scale,
+            rgb,
+            mean_3d_refined_offset,
+            scale_refined
         )
 
 def main():
@@ -110,11 +162,11 @@ def main():
     # 定義輸入和輸出的名稱 (這在之後使用 ONNX 模型時很重要)
     input_names = wrapped_model.smplx_keys + wrapped_model.cam_keys
     output_names = [
-        'mean_3d', 
-        'opacity', 
-        'scale', 
-        'rotation', 
-        'rgb'
+        'mean_3d_offset',
+        'scale',
+        'rgb',
+        'mean_3d_refined_offset',
+        'scale_refined'
     ] # 根據您在 Wrapper 中返回的內容命名
     print("範例輸入準備完成。")
 
@@ -127,7 +179,7 @@ def main():
         input_names=input_names,
         output_names=output_names,
         verbose=False, # 設為 True 可以看到詳細的轉換日誌
-        opset_version=12, # 建議使用 11 或更高的版本
+        opset_version=16, # 建議使用 11 或更高的版本
         export_params=True
     )
     print("模型轉換成功！")
