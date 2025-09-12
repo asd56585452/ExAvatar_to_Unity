@@ -26,8 +26,8 @@ class ModelWrapper(torch.nn.Module):
         self.register_buffer('transform_mat_neutral_pose', transform_mat_neutral_pose)
         
         self.smplx_keys = [
-            'root_pose', 'body_pose', 'jaw_pose', 'leye_pose', 'reye_pose', 
-            'lhand_pose', 'rhand_pose', 'expr', 'trans'
+             'body_pose', 'jaw_pose', 'leye_pose', 'reye_pose', 
+            'lhand_pose', 'rhand_pose', 'expr'
         ]
         self.cam_keys = []
 
@@ -38,7 +38,7 @@ class ModelWrapper(torch.nn.Module):
         smplx_input_count = len(self.smplx_keys)
         smplx_inputs_tuple = inputs[:smplx_input_count]
         cam_inputs_tuple = inputs[smplx_input_count:]
-        joint_zero_pose = self.model.module.human_gaussian.get_zero_pose_human()
+        # joint_zero_pose = self.model.module.human_gaussian.get_zero_pose_human()
 
         for i, key in enumerate(self.smplx_keys):
             smplx_param[key] = smplx_inputs_tuple[i]
@@ -62,15 +62,15 @@ class ModelWrapper(torch.nn.Module):
         mean_3d = mean_3d + smplx_expr_offset
         mean_3d_refined = mean_3d_refined + smplx_expr_offset
 
-        nn_vertex_idxs = knn_points(mean_3d[None,:,:], self.mesh_neutral_pose_wo_upsample[None,:,:], K=1, return_nn=True).idx[0,:,0]
-        nn_vertex_idxs = self.model.module.human_gaussian.lr_idx_to_hr_idx(nn_vertex_idxs)
-        mask = (self.model.module.human_gaussian.is_rhand + self.model.module.human_gaussian.is_lhand + self.model.module.human_gaussian.is_face) > 0
-        nn_vertex_idxs[mask] = torch.arange(smpl_x.vertex_num_upsampled).cuda()[mask]
+        # nn_vertex_idxs = knn_points(mean_3d[None,:,:], self.mesh_neutral_pose_wo_upsample[None,:,:], K=1, return_nn=True).idx[0,:,0]
+        # nn_vertex_idxs = self.model.module.human_gaussian.lr_idx_to_hr_idx(nn_vertex_idxs)
+        # mask = (self.model.module.human_gaussian.is_rhand + self.model.module.human_gaussian.is_lhand + self.model.module.human_gaussian.is_face) > 0
+        # nn_vertex_idxs[mask] = torch.arange(smpl_x.vertex_num_upsampled).cuda()[mask]
 
-        transform_mat_joint = self.model.module.human_gaussian.get_transform_mat_joint(self.transform_mat_neutral_pose, joint_zero_pose, smplx_param)
-        transform_mat_vertex = self.model.module.human_gaussian.get_transform_mat_vertex(transform_mat_joint, nn_vertex_idxs)
-        mean_3d = self.model.module.human_gaussian.lbs(mean_3d, transform_mat_vertex, smplx_param['trans'])
-        mean_3d_refined = self.model.module.human_gaussian.lbs(mean_3d_refined, transform_mat_vertex, smplx_param['trans'])
+        # transform_mat_joint = self.model.module.human_gaussian.get_transform_mat_joint(self.transform_mat_neutral_pose, joint_zero_pose, smplx_param)
+        # transform_mat_vertex = self.model.module.human_gaussian.get_transform_mat_vertex(transform_mat_joint, nn_vertex_idxs)
+        # mean_3d = self.model.module.human_gaussian.lbs(mean_3d, transform_mat_vertex, smplx_param['trans'])
+        # mean_3d_refined = self.model.module.human_gaussian.lbs(mean_3d_refined, transform_mat_vertex, smplx_param['trans'])
         
         rgb = (torch.tanh(rgb) + 1) / 2
         
@@ -84,7 +84,9 @@ class ModelWrapper(torch.nn.Module):
             rotation, 
             rgb,
             mean_3d_refined,
-            scale_refined
+            scale_refined,
+            self.mesh_neutral_pose_wo_upsample,
+            self.transform_mat_neutral_pose
         )
 
 def main():
@@ -141,7 +143,7 @@ def main():
     input_names = wrapped_model.smplx_keys + wrapped_model.cam_keys
     output_names = [
         'mean_3d', 'opacity', 'scale', 'rotation', 
-        'rgb', 'mean_3d_refined', 'scale_refined'
+        'rgb', 'mean_3d_refined', 'scale_refined','mesh_neutral_pose_wo_upsample','transform_mat_neutral_pose'
     ]
     print("PyTorch 模型與輸入準備完成。")
 
@@ -226,6 +228,10 @@ def main():
     print(onnx_outputs[5])
     print(pytorch_outputs_np[6])
     print(onnx_outputs[6])
+    print(pytorch_outputs_np[7])
+    print(onnx_outputs[7])
+    print(pytorch_outputs_np[8])
+    print(onnx_outputs[8])
 
 if __name__ == "__main__":
     main()

@@ -398,7 +398,7 @@ class HumanGaussian(nn.Module):
         reye_pose = smplx_param['reye_pose'].view(1,3)
         lhand_pose = smplx_param['lhand_pose'].view(len(smpl_x.joint_part['lhand']),3)
         rhand_pose = smplx_param['rhand_pose'].view(len(smpl_x.joint_part['rhand']),3)
-        trans = smplx_param['trans'].view(1,3)
+        # trans = smplx_param['trans'].view(1,3)
 
         # forward kinematics
         pose = torch.cat((root_pose, body_pose, jaw_pose, leye_pose, reye_pose, lhand_pose, rhand_pose)) 

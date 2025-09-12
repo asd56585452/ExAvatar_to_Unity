@@ -74,7 +74,7 @@ class ModelWrapper(torch.nn.Module):
         cam_inputs_count = len(self.cam_keys)
         smplx_inputs_tuple = inputs[:smplx_input_count]
         cam_inputs_tuple = inputs[smplx_input_count:smplx_input_count+cam_inputs_count]
-        joint_zero_pose = self.model.module.human_gaussian.get_zero_pose_human()
+        # joint_zero_pose = self.model.module.human_gaussian.get_zero_pose_human()
 
         for i, key in enumerate(self.smplx_keys):
             smplx_param[key] = smplx_inputs_tuple[i]
@@ -107,17 +107,17 @@ class ModelWrapper(torch.nn.Module):
 
         # get nearest vertex
         # for hands and face, assign original vertex index to use sknning weight of the original vertex
-        nn_vertex_idxs = knn_points(mean_3d[None,:,:], self.mesh_neutral_pose_wo_upsample[None,:,:], K=1, return_nn=True).idx[0,:,0] # dimension: smpl_x.vertex_num_upsampled
-        nn_vertex_idxs = self.model.module.human_gaussian.lr_idx_to_hr_idx(nn_vertex_idxs)
-        mask = (self.model.module.human_gaussian.is_rhand + self.model.module.human_gaussian.is_lhand + self.model.module.human_gaussian.is_face) > 0
-        updates = torch.arange(smpl_x.vertex_num_upsampled, device=nn_vertex_idxs.device, dtype=torch.int64)
-        nn_vertex_idxs = torch.where(mask, updates, nn_vertex_idxs)
+        # nn_vertex_idxs = knn_points(mean_3d[None,:,:], self.mesh_neutral_pose_wo_upsample[None,:,:], K=1, return_nn=True).idx[0,:,0] # dimension: smpl_x.vertex_num_upsampled
+        # nn_vertex_idxs = self.model.module.human_gaussian.lr_idx_to_hr_idx(nn_vertex_idxs)
+        # mask = (self.model.module.human_gaussian.is_rhand + self.model.module.human_gaussian.is_lhand + self.model.module.human_gaussian.is_face) > 0
+        # updates = torch.arange(smpl_x.vertex_num_upsampled, device=nn_vertex_idxs.device, dtype=torch.int64)
+        # nn_vertex_idxs = torch.where(mask, updates, nn_vertex_idxs)
 
         # get transformation matrix of the nearest vertex and perform lbs
-        transform_mat_joint = self.model.module.human_gaussian.get_transform_mat_joint(self.transform_mat_neutral_pose, joint_zero_pose, smplx_param)
-        transform_mat_vertex = self.model.module.human_gaussian.get_transform_mat_vertex(transform_mat_joint, nn_vertex_idxs)
-        mean_3d = self.model.module.human_gaussian.lbs(mean_3d, transform_mat_vertex, smplx_param['trans']) # posed with smplx_param
-        mean_3d_refined = self.model.module.human_gaussian.lbs(mean_3d_refined, transform_mat_vertex, smplx_param['trans']) # posed with smplx_param
+        # transform_mat_joint = self.model.module.human_gaussian.get_transform_mat_joint(self.transform_mat_neutral_pose, joint_zero_pose, smplx_param)
+        # transform_mat_vertex = self.model.module.human_gaussian.get_transform_mat_vertex(transform_mat_joint, nn_vertex_idxs)
+        # mean_3d = self.model.module.human_gaussian.lbs(mean_3d, transform_mat_vertex, smplx_param['trans']) # posed with smplx_param
+        # mean_3d_refined = self.model.module.human_gaussian.lbs(mean_3d_refined, transform_mat_vertex, smplx_param['trans']) # posed with smplx_param
         
         # forward to rgb network
         rgb = (torch.tanh(rgb) + 1) / 2
@@ -133,7 +133,9 @@ class ModelWrapper(torch.nn.Module):
             rotation, 
             rgb,
             mean_3d_refined,
-            scale_refined
+            scale_refined,
+            self.mesh_neutral_pose_wo_upsample,
+            self.transform_mat_neutral_pose
         )
 
 def main():
@@ -192,7 +194,7 @@ def main():
     # dummy_inputs = smplx_inputs_tuple + cam_inputs_tuple + get_neutral_pose_human_input
     
     # 定義輸入和輸出的名稱 (這在之後使用 ONNX 模型時很重要)
-    input_names = wrapped_model.smplx_keys + wrapped_model.cam_keys + ['mesh_neutral_pose', 'mesh_neutral_pose_wo_upsample', 'None', 'transform_mat_neutral_pose']
+    input_names = wrapped_model.smplx_keys + wrapped_model.cam_keys
     output_names = [
         'mean_3d',
             'opacity',
@@ -200,7 +202,10 @@ def main():
             'rotation', 
             'rgb',
             'mean_3d_refined',
-            'scale_refined'
+            'scale_refined',
+            'mesh_neutral_pose_wo_upsample',
+            'transform_mat_neutral_pose'
+
     ] # 根據您在 Wrapper 中返回的內容命名
     print("範例輸入準備完成。")
 
