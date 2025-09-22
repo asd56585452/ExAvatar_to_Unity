@@ -52,7 +52,7 @@ def main():
     else:        
         motion_name = motion_path.split('/')[-1]
     frame_idx_list = sorted([int(x.split('/')[-1][:-5]) for x in glob(osp.join(args.motion_path, 'smplx_optimized', 'smplx_params_smoothed', '*.json'))])
-    frame_idx_list = frame_idx_list[0:1]
+    # frame_idx_list = frame_idx_list[0:1]
     render_shape = cv2.imread(osp.join(args.motion_path, 'frames', str(frame_idx_list[0]) + '.png')).shape[:2]
     video_out = cv2.VideoWriter(motion_name + '.mp4', cv2.VideoWriter_fourcc(*'mp4v'), 30, (render_shape[1]*3, render_shape[0]))
     for frame_idx in tqdm(frame_idx_list):
