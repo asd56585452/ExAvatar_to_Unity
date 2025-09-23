@@ -14,6 +14,85 @@ from config import cfg
 from base import Tester
 from utils.smpl_x import smpl_x
 from model import get_model
+from plyfile import PlyData, PlyElement
+# --- 新增輔助函式 ---
+def rgb_to_sh(rgb):
+    """
+    將 [0, 1] 範圍的 RGB 顏色轉換為 0 階球諧函數 (Spherical Harmonics) 係數。
+    這是 3DGS 論文中 SH2RGB 的逆操作。 C0 = 0.28209479177387814
+    """
+    C0 = 0.28209479177387814
+    return (rgb - 0.5) / C0
+
+# --- 修改後的儲存函式 ---
+def save_to_ply_3dgs_format(path, mean_3d, rgb, raw_opacity, raw_scale, rotation):
+    """
+    將模型參數儲存為原始 3DGS 論文中定義的 .ply 格式。
+    這個格式儲存的是未經啟動函數處理的原始可訓練參數。
+
+    Args:
+        path (str): 儲存 .ply 檔案的路徑.
+        mean_3d (np.array): Gaussians 的中心點位置 (N, 3).
+        rgb (np.array): Gaussians 的顏色 (N, 3), 範圍應在 [0, 1].
+        raw_opacity (np.array): 未經 sigmoid 處理的原始 logit opacity (N, 1).
+        raw_scale (np.array): 未經 exp() 處理的原始 log-space scale (N, 3).
+        rotation (np.array): 旋轉四元數 (N, 4).
+    """
+    print(f"正在將輸出儲存為原始 3DGS 格式至 '{path}'...")
+    
+    num_points = mean_3d.shape[0]
+
+    # 1. 處理顏色: 將 RGB 轉換為 f_dc (0階 SH)。f_rest 設為 0。
+    features_dc = rgb_to_sh(rgb).astype(np.float32)
+    # 假設 SH degree 為 3，則 rest features 有 15*3=45 個
+    # 如果您的模型不需要這麼高的階數，可以設為更小的值，但為了兼容性，這裡使用 45
+    features_rest = np.zeros((num_points, 45), dtype=np.float32)
+
+    # 確保其他參數是 float32
+    xyz = mean_3d.astype(np.float32)
+    opacity = np.clip(raw_opacity, 1e-6, 1.0 - 1e-6)
+    opacities = np.log(opacity / (1.0 - opacity))
+    scales = np.log(raw_scale).astype(np.float32)
+    rotations = rotation.astype(np.float32)
+    
+    # 建立所有屬性的列表
+    dtype_full = [
+        ('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
+        ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4'),
+        ('f_dc_0', 'f4'), ('f_dc_1', 'f4'), ('f_dc_2', 'f4')
+    ]
+    # 添加 f_rest 屬性
+    for i in range(features_rest.shape[1]):
+        dtype_full.append((f'f_rest_{i}', 'f4'))
+    
+    dtype_full.extend([
+        ('opacity', 'f4'),
+        ('scale_0', 'f4'), ('scale_1', 'f4'), ('scale_2', 'f4'),
+        ('rot_0', 'f4'), ('rot_1', 'f4'), ('rot_2', 'f4'), ('rot_3', 'f4')
+    ])
+
+    # 準備寫入檔案的資料
+    elements = np.empty(num_points, dtype=dtype_full)
+    normals = np.zeros_like(xyz, dtype=np.float32)
+    
+    attributes = np.concatenate((
+        xyz,
+        normals,
+        features_dc,
+        features_rest,
+        opacities,
+        scales,
+        rotations
+    ), axis=1)
+    
+    elements[:] = list(map(tuple, attributes))
+
+    # 建立 PlyData 物件並寫入檔案
+    el = PlyElement.describe(elements, 'vertex')
+    PlyData([el]).write(path)
+    
+    print(f"✅ 成功以原始 3DGS 格式儲存 {num_points} 個 Gaussians 至 '{path}'。")
+
 
 # --- 步驟 1: 使用與 export_onnx.py 完全相同的 ModelWrapper ---
 class ModelWrapper(torch.nn.Module):
@@ -116,7 +195,7 @@ class ModelWrapper(torch.nn.Module):
         )
 
 def main():
-    parser = argparse.ArgumentParser(description="Verify ONNX model against PyTorch model")
+    parser = argparse.ArgumentParser(description="Verify ONNX model against PyTorch model and export to PLY")
     parser.add_argument('--subject_id', type=str, required=True, help="Subject ID")
     parser.add_argument('--test_epoch', type=str, required=True, help="Model checkpoint epoch")
     parser.add_argument('--motion_path', type=str, required=True, help="Path to motion data")
@@ -154,17 +233,14 @@ def main():
         smplx_param_dict = {k: torch.FloatTensor(v).cuda().view(-1) for k, v in json.load(f).items()}
 
     # --- 步驟 2: 更新模型初始化和輸入/輸出列表 ---
-    # 預先計算常數，並將它們傳遞給 Wrapper 的建構函式
-    
     wrapped_model = ModelWrapper(tester.model).cuda().eval()
     
-    # 更新輸入列表，現在包含了 camera 參數
     smplx_inputs_tuple = tuple(smplx_param_dict[key] for key in wrapped_model.smplx_keys)
     cam_inputs_tuple = tuple(cam_param_dict[key] for key in wrapped_model.cam_keys)
     dummy_inputs = smplx_inputs_tuple + cam_inputs_tuple
     
-    # 更新輸入和輸出的名稱列表
     input_names = wrapped_model.smplx_keys + wrapped_model.cam_keys
+    # 更新輸出的名稱列表以匹配 ModelWrapper 的回傳值
     output_names = [
         'mean_3d', 'opacity', 'scale', 'rotation', 
         'rgb', 'mean_3d_refined', 'scale_refined','mesh_neutral_pose_wo_upsample','transform_mat_neutral_pose'
@@ -206,7 +282,6 @@ def main():
             all_match = False
             continue
 
-        # --- 新增的誤差計算邏輯 ---
         abs_diff = np.abs(pytorch_res - onnx_res)
         max_diff = np.max(abs_diff)
         mean_diff = np.mean(abs_diff)
@@ -215,7 +290,6 @@ def main():
         outlier_count = np.sum(abs_diff > TOLERANCE)
         error_ratio = outlier_count / num_elements
         
-        # 根據是否有任何元素超過容忍度來判斷是否通過
         is_close = outlier_count == 0
 
         if is_close:
@@ -231,22 +305,38 @@ def main():
         print(f"   最大絕對誤差: {max_diff:.6g}")
         print(f"   平均絕對誤差 (MAE): {mean_diff:.6g}")
         print(f"   誤差 > {TOLERANCE} 的元素數量: {outlier_count} / {num_elements}")
-        print(f"   出錯比例: {error_ratio:.4%}") # 使用百分比格式化輸出
+        print(f"   出錯比例: {error_ratio:.4%}")
     
     print("\n\n--- 驗證總結 ---")
     if all_match:
         print("🎉 所有輸出均在容忍度內！ONNX 模型已成功驗證。")
     else:
         print("💔 發現部分輸出不匹配。請根據上述詳細指標進行評估。")
-    print(pytorch_outputs_np[0])
-    print(pytorch_outputs_np[1])
-    print(pytorch_outputs_np[2])
-    print(pytorch_outputs_np[3])
-    print(pytorch_outputs_np[4])
-    print(pytorch_outputs_np[5])
-    print(pytorch_outputs_np[6])
-    print(pytorch_outputs_np[7])
-    print(pytorch_outputs_np[8])
+
+    # --- NEW CODE ---
+    # 在驗證結束後，將 PyTorch 和 ONNX 的輸出儲存為 .ply 檔案
+    print("\n\n--- 儲存 3DGS PLY 檔案 ---")
+
+    # 儲存 PyTorch 模型的輸出
+    save_to_ply_3dgs_format(
+        path='output_pytorch.ply',
+        mean_3d=pytorch_outputs_np[output_names.index('mean_3d')],
+        rgb=pytorch_outputs_np[output_names.index('rgb')],
+        raw_opacity=pytorch_outputs_np[output_names.index('opacity')],
+        raw_scale=pytorch_outputs_np[output_names.index('scale')],
+        rotation=pytorch_outputs_np[output_names.index('rotation')]
+    )
+    
+    # 儲存 ONNX 模型的輸出
+    save_to_ply_3dgs_format(
+        path='output_onnx.ply',
+        mean_3d=onnx_outputs[output_names.index('mean_3d')],
+        rgb=onnx_outputs[output_names.index('rgb')],
+        raw_opacity=onnx_outputs[output_names.index('opacity')],
+        raw_scale=onnx_outputs[output_names.index('scale')],
+        rotation=onnx_outputs[output_names.index('rotation')]
+    )
+
 
 if __name__ == "__main__":
     main()
