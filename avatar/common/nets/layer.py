@@ -6,42 +6,71 @@ from pytorch3d.renderer import PerspectiveCameras, RasterizationSettings, MeshRa
 from pytorch3d.renderer import TexturesUV
 from config import cfg
 
-class MyGroupNorm(nn.Module):
+class MyChunkedGroupNorm(nn.Module):
     """
-    一個自訂的 GroupNorm 層，專門處理 2D 輸入以相容 ONNX 導出。
-    它在內部將 2D 輸入 (N, C) 暫時轉為 4D (N, C, 1, 1)，
-    執行 GroupNorm 後再轉回 2D。
-    對於 3D 或更高維度的輸入，它的行為和標準 nn.GroupNorm 完全一樣。
-    """
-    def __init__(self, num_groups, num_channels, eps=1e-5, affine=True):
-        super(MyGroupNorm, self).__init__()
-        # 建立一個標準的 GroupNorm 層實例
-        self.gn = nn.GroupNorm(num_groups, num_channels, eps=eps, affine=affine)
+    一個自訂的 GroupNorm 層，增加了對大批次的自動切分處理功能。
 
-    def forward(self, x):
-        # 檢查輸入張量的維度
-        if x.dim() == 2:
-            # 如果是 2D 輸入 [N, C]
-            # 1. 增加維度 -> [N, C, 1, 1]
+    Attributes:
+        chunk_size (int, optional): 
+            單次處理的最大批次大小。如果輸入的批次大小超過此值，
+            將會被自動切分成多個小塊進行處理。
+            如果為 None，則不進行切分。預設為 None。
+    """
+    def __init__(self, num_groups, num_channels, eps=1e-5, affine=True, chunk_size=None):
+        super(MyChunkedGroupNorm, self).__init__()
+        self.gn = nn.GroupNorm(num_groups, num_channels, eps=eps, affine=affine)
+        if chunk_size is None:
+            chunk_size = 65535//num_groups
+        self.chunk_size = chunk_size
+
+    def _process_tensor(self, x):
+        """
+        核心處理邏輯：處理單個張量（可能是完整批次或一個小塊）。
+        """
+        # 檢查輸入張量的維度是否為 2D
+        is_2d = (x.dim() == 2)
+        
+        # 如果是 2D 輸入 [N, C]，暫時擴展到 4D [N, C, 1, 1]
+        if is_2d:
             reshaped_x = x.unsqueeze(-1).unsqueeze(-1)
-            # 2. 執行標準的 GroupNorm
-            normed_x = self.gn(reshaped_x)
-            # 3. 壓平維度 -> [N, C]
+        else:
+            reshaped_x = x
+
+        # 執行標準的 GroupNorm
+        normed_x = self.gn(reshaped_x)
+
+        # 如果原始輸入是 2D，則恢復其形狀 [N, C]
+        if is_2d:
             return normed_x.squeeze(-1).squeeze(-1)
         else:
-            # 如果是 3D, 4D, 5D... 輸入，直接執行
-            return self.gn(x)
+            return normed_x
 
-    # 讓這個模組的 state_dict 和內部的 gn 層保持一致
-    # 這一步驟是可選的，但能讓結構更清晰
+    def forward(self, x):
+        batch_size = x.shape[0]
+
+        # 檢查是否需要切分
+        if self.chunk_size is not None and batch_size > self.chunk_size:
+            # --- 自動切分邏輯 ---
+            # 1. 使用 torch.split 將輸入張量沿著批次維度切成多個小塊
+            chunks = torch.split(x, self.chunk_size, dim=0)
+            
+            # 2. 對每個小塊獨立執行處理，並將結果收集起來
+            processed_chunks = [self._process_tensor(chunk) for chunk in chunks]
+            
+            # 3. 使用 torch.cat 將處理後的小塊合併成一個完整的張量
+            return torch.cat(processed_chunks, dim=0)
+        else:
+            # --- 標準處理邏輯 ---
+            # 如果批次大小未超過閾值，或未設定 chunk_size，則直接處理
+            return self._process_tensor(x)
+
+    # 為了方便保存和載入模型，讓 state_dict 指向內部的 gn 層
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
                               missing_keys, unexpected_keys, error_msgs):
-        # 將權重直接載入到 self.gn 中
         self.gn._load_from_state_dict(state_dict, prefix, local_metadata, strict,
                                       missing_keys, unexpected_keys, error_msgs)
 
     def state_dict(self, *args, **kwargs):
-        # 回傳 self.gn 的 state_dict
         return self.gn.state_dict(*args, **kwargs)
 
 def make_linear_layers(feat_dims, relu_final=True, use_gn=False):
@@ -52,7 +81,7 @@ def make_linear_layers(feat_dims, relu_final=True, use_gn=False):
         # Do not use ReLU for final estimation
         if i < len(feat_dims)-2 or (i == len(feat_dims)-2 and relu_final):
             if use_gn:
-                layers.append(MyGroupNorm(4, feat_dims[i+1]))
+                layers.append(MyChunkedGroupNorm(4, feat_dims[i+1]))
             layers.append(nn.ReLU(inplace=True))
 
     return nn.Sequential(*layers)
