@@ -100,3 +100,4 @@ def main():
     
 if __name__ == "__main__":
     main()
+#python animate.py --subject_id gyeongsik --test_epoch 4 --motion_path /home/cgvmis418/ExAvatar_to_Unity/motions/jungkook_standing_next_to_you

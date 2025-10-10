@@ -4,6 +4,7 @@ import argparse
 import os.path as osp
 import numpy as np
 import onnxruntime # 載入 ONNX 執行環境
+#python verify_onnx.py --subject_id gyeongsik --test_epoch 4 --motion_path /home/cgvmis418/ExAvatar_to_Unity/motions/jungkook_standing_next_to_you --onnx_path "../data/NeuMan/data/gyeongsik/human_model_ChunkedGroupNorm.onnx"
 
 # 新增必要的 import，與 export_onnx.py 同步
 from pytorch3d.transforms import matrix_to_quaternion

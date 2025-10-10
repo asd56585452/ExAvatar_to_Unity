@@ -4,6 +4,7 @@ from torch.onnx.symbolic_helper import parse_args
 from pytorch3d.transforms import matrix_to_rotation_6d, rotation_6d_to_matrix, matrix_to_quaternion, quaternion_to_matrix, axis_angle_to_matrix, matrix_to_axis_angle
 from pytorch3d.ops import knn_points
 #python export_onnx.py --subject_id gyeongsik --test_epoch 4 --motion_path /home/cgvmis418/ExAvatar_to_Unity/motions/jungkook_standing_next_to_you --output_path "../data/NeuMan/data/gyeongsik/human_model_fix.onnx"
+#python export_onnx.py --subject_id gyeongsik --test_epoch 4 --motion_path /home/cgvmis418/ExAvatar_to_Unity/motions/jungkook_standing_next_to_you --output_path "../data/NeuMan/data/gyeongsik/human_model_ChunkedGroupNorm.onnx"
 # --- 為 aten::sinc 定義翻譯規則 (修正版) ---
 @parse_args("v")
 def symbolic_sinc(g, x):
