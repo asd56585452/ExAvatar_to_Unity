@@ -3,8 +3,7 @@ from torch.onnx import register_custom_op_symbolic
 from torch.onnx.symbolic_helper import parse_args
 from pytorch3d.transforms import matrix_to_rotation_6d, rotation_6d_to_matrix, matrix_to_quaternion, quaternion_to_matrix, axis_angle_to_matrix, matrix_to_axis_angle
 from pytorch3d.ops import knn_points
-#python export_onnx.py --subject_id gyeongsik --test_epoch 4 --motion_path /home/cgvmis418/ExAvatar_to_Unity/motions/jungkook_standing_next_to_you --output_path "../data/NeuMan/data/gyeongsik/human_model_fix.onnx"
-#python export_onnx.py --subject_id gyeongsik --test_epoch 4 --motion_path /home/cgvmis418/ExAvatar_to_Unity/motions/jungkook_standing_next_to_you --output_path "../data/NeuMan/data/gyeongsik/human_model_ChunkedGroupNorm.onnx"
+#python export_onnx.py --subject_id gyeongsik --test_epoch 4 --motion_path /home/cgvmis418/ExAvatar_to_Unity/motions/jungkook_standing_next_to_you --output_path "../data/NeuMan/data/gyeongsik/human_model_ChunkedGroupNorm_lbs.onnx"
 # --- 為 aten::sinc 定義翻譯規則 (修正版) ---
 @parse_args("v")
 def symbolic_sinc(g, x):
@@ -45,9 +44,43 @@ from model import get_model # 您需要確保 model.py 和相關依賴項可以�
 # --- 步驟 1: 建立一個包裝模型 (Wrapper Model) 來處理字典輸入 ---
 # torch.onnx.export 不直接支援字典輸入，我們需要這個包裝器來將張量列表轉換回字典
 class ModelWrapper(torch.nn.Module):
-    def __init__(self, model):
+    def __init__(self, model,mode="full"):
         super().__init__()
         self.model = model
+        self.mode = mode
+        if mode=="full":
+            self.output_names = [
+                    'mean_3d',
+                        'opacity',
+                        'scale',
+                        'rotation', 
+                        'rgb',
+                        'mean_3d_refined',
+                        'scale_refined',
+                        'joint_zero_pose',
+                        'transform_mat_neutral_pose',
+                        'parents',
+                        'skinning_weight'
+                ]
+        elif mode=="no_refine":
+            self.output_names = [
+                    'mean_3d',
+                        'scale',
+                        'rgb'
+                ]
+        elif mode=="refine":
+            self.output_names = [
+                    'mean_3d_refined',
+                    'scale_refined',
+                        'rgb'
+                ]
+        elif mode=="static":
+            self.output_names = [
+                    'joint_zero_pose',
+                        'transform_mat_neutral_pose',
+                        'parents',
+                        'skinning_weight'
+                ]
         with torch.no_grad():
             mesh_neutral_pose, mesh_neutral_pose_wo_upsample, _, transform_mat_neutral_pose = model.module.human_gaussian.get_neutral_pose_human(jaw_zero_pose=True, use_id_info=True)
             joint_zero_pose = model.module.human_gaussian.get_zero_pose_human()
@@ -61,13 +94,21 @@ class ModelWrapper(torch.nn.Module):
             scale = model.module.human_gaussian.scale_net(geo_feat) # scale of Gaussians
             rgb = model.module.human_gaussian.rgb_net(tri_feat) # rgb of Gaussians
             mean_3d = mesh_neutral_pose + mean_offset # 大 pose
+
+            nn_vertex_idxs = knn_points(mean_3d[None,:,:], mesh_neutral_pose_wo_upsample[None,:,:], K=1, return_nn=True).idx[0,:,0] # dimension: smpl_x.vertex_num_upsampled
+            nn_vertex_idxs = model.module.human_gaussian.lr_idx_to_hr_idx(nn_vertex_idxs)
+            mask = (model.module.human_gaussian.is_rhand + model.module.human_gaussian.is_lhand + model.module.human_gaussian.is_face) > 0
+            nn_vertex_idxs[mask] = torch.arange(smpl_x.vertex_num_upsampled).cuda()[mask]
         # --- 核心修改：將傳入的常數張量註冊為 buffer ---
         self.register_buffer('tri_feat', tri_feat)
         self.register_buffer('scale', scale)
         self.register_buffer('rgb', rgb)
         self.register_buffer('mean_3d', mean_3d)
-        self.register_buffer('mesh_neutral_pose_wo_upsample', mesh_neutral_pose_wo_upsample)
+        self.register_buffer('joint_zero_pose', joint_zero_pose)
         self.register_buffer('transform_mat_neutral_pose', transform_mat_neutral_pose)
+        # self.register_buffer('nn_vertex_idxs', nn_vertex_idxs)
+        self.register_buffer('parents', model.module.human_gaussian.smplx_layer.parents)
+        self.register_buffer('skinning_weight', model.module.human_gaussian.skinning_weight[nn_vertex_idxs,:])
         
         # 根據 smplx_params_smoothed_0.json 和 cam_params_0.json 的結構，定義輸入張量的鍵名和順序
         # **這個順序必須與後面建立 dummy_inputs 的順序完全一致**
@@ -131,17 +172,40 @@ class ModelWrapper(torch.nn.Module):
         opacity = torch.ones((smpl_x.vertex_num_upsampled,1)).float().cuda() # constant opacity
         # 根據 module.py 的定義，human_asset 是一個字典。
         # ONNX 導出需要返回一個張量或張量的元組，因此我們提取字典中的所有張量。
-        return (
-            mean_3d,
-            opacity,
-            scale,
-            rotation, 
-            rgb,
-            mean_3d_refined,
-            scale_refined,
-            self.mesh_neutral_pose_wo_upsample,
-            self.transform_mat_neutral_pose
-        )
+        if self.mode == "full":
+            return (
+                mean_3d,
+                opacity,
+                scale,
+                rotation, 
+                rgb,
+                mean_3d_refined,
+                scale_refined,
+                self.joint_zero_pose,
+                self.transform_mat_neutral_pose,
+                # self.nn_vertex_idxs,
+                self.parents,
+                self.skinning_weight
+            )
+        elif self.mode == "no_refine":
+            return (
+                mean_3d,
+                scale,
+                rgb
+            )
+        elif self.mode == "refine":
+            return (
+                mean_3d_refined,
+                scale_refined,
+                rgb
+            )
+        elif self.mode == "static":
+            return (
+                self.joint_zero_pose,
+                self.transform_mat_neutral_pose,
+                self.parents,
+                self.skinning_weight
+            )
 
 def main():
     # --- 與 animate.py 類似的參數設定 ---
@@ -199,18 +263,7 @@ def main():
     
     # 定義輸入和輸出的名稱 (這在之後使用 ONNX 模型時很重要)
     input_names = wrapped_model.smplx_keys + wrapped_model.cam_keys
-    output_names = [
-        'mean_3d',
-            'opacity',
-            'scale',
-            'rotation', 
-            'rgb',
-            'mean_3d_refined',
-            'scale_refined',
-            'mesh_neutral_pose_wo_upsample',
-            'transform_mat_neutral_pose'
-
-    ] # 根據您在 Wrapper 中返回的內容命名
+    output_names = wrapped_model.output_names # 根據您在 Wrapper 中返回的內容命名
     print("範例輸入準備完成。")
 
     # --- 步驟 4: 執行 ONNX 轉換 ---

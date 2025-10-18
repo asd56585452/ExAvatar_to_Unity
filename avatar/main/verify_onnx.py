@@ -4,7 +4,7 @@ import argparse
 import os.path as osp
 import numpy as np
 import onnxruntime # 載入 ONNX 執行環境
-#python verify_onnx.py --subject_id gyeongsik --test_epoch 4 --motion_path /home/cgvmis418/ExAvatar_to_Unity/motions/jungkook_standing_next_to_you --onnx_path "../data/NeuMan/data/gyeongsik/human_model_ChunkedGroupNorm.onnx"
+#python verify_onnx.py --subject_id gyeongsik --test_epoch 4 --motion_path /home/cgvmis418/ExAvatar_to_Unity/motions/jungkook_standing_next_to_you --onnx_path "../data/NeuMan/data/gyeongsik/human_model_ChunkedGroupNorm_lbs.onnx"
 
 # 新增必要的 import，與 export_onnx.py 同步
 from pytorch3d.transforms import matrix_to_quaternion
@@ -118,8 +118,11 @@ class ModelWrapper(torch.nn.Module):
         self.register_buffer('scale', scale)
         self.register_buffer('rgb', rgb)
         self.register_buffer('mean_3d', mean_3d)
+        self.register_buffer('joint_zero_pose', joint_zero_pose)
         self.register_buffer('mesh_neutral_pose_wo_upsample', mesh_neutral_pose_wo_upsample)
         self.register_buffer('transform_mat_neutral_pose', transform_mat_neutral_pose)
+        self.register_buffer('parents', model.module.human_gaussian.smplx_layer.parents)
+        self.register_buffer('skinning_weight', model.module.human_gaussian.skinning_weight)
         
         # 根據 smplx_params_smoothed_0.json 和 cam_params_0.json 的結構，定義輸入張量的鍵名和順序
         # **這個順序必須與後面建立 dummy_inputs 的順序完全一致**
@@ -164,11 +167,11 @@ class ModelWrapper(torch.nn.Module):
 
         # get nearest vertex
         # for hands and face, assign original vertex index to use sknning weight of the original vertex
-        # nn_vertex_idxs = knn_points(mean_3d[None,:,:], self.mesh_neutral_pose_wo_upsample[None,:,:], K=1, return_nn=True).idx[0,:,0] # dimension: smpl_x.vertex_num_upsampled
-        # nn_vertex_idxs = self.model.module.human_gaussian.lr_idx_to_hr_idx(nn_vertex_idxs)
-        # mask = (self.model.module.human_gaussian.is_rhand + self.model.module.human_gaussian.is_lhand + self.model.module.human_gaussian.is_face) > 0
-        # updates = torch.arange(smpl_x.vertex_num_upsampled, device=nn_vertex_idxs.device, dtype=torch.int64)
-        # nn_vertex_idxs = torch.where(mask, updates, nn_vertex_idxs)
+        nn_vertex_idxs = knn_points(mean_3d[None,:,:], self.mesh_neutral_pose_wo_upsample[None,:,:], K=1, return_nn=True).idx[0,:,0] # dimension: smpl_x.vertex_num_upsampled
+        nn_vertex_idxs = self.model.module.human_gaussian.lr_idx_to_hr_idx(nn_vertex_idxs)
+        mask = (self.model.module.human_gaussian.is_rhand + self.model.module.human_gaussian.is_lhand + self.model.module.human_gaussian.is_face) > 0
+        updates = torch.arange(smpl_x.vertex_num_upsampled, device=nn_vertex_idxs.device, dtype=torch.int64)
+        nn_vertex_idxs = torch.where(mask, updates, nn_vertex_idxs)
 
         # get transformation matrix of the nearest vertex and perform lbs
         # transform_mat_joint = self.model.module.human_gaussian.get_transform_mat_joint(self.transform_mat_neutral_pose, joint_zero_pose, smplx_param)
@@ -191,8 +194,11 @@ class ModelWrapper(torch.nn.Module):
             rgb,
             mean_3d_refined,
             scale_refined,
-            self.mesh_neutral_pose_wo_upsample,
-            self.transform_mat_neutral_pose
+            self.joint_zero_pose,
+            self.transform_mat_neutral_pose,
+            # nn_vertex_idxs,
+            self.parents,
+            self.skinning_weight[nn_vertex_idxs,:]
         )
 
 def main():
@@ -243,8 +249,17 @@ def main():
     input_names = wrapped_model.smplx_keys + wrapped_model.cam_keys
     # 更新輸出的名稱列表以匹配 ModelWrapper 的回傳值
     output_names = [
-        'mean_3d', 'opacity', 'scale', 'rotation', 
-        'rgb', 'mean_3d_refined', 'scale_refined','mesh_neutral_pose_wo_upsample','transform_mat_neutral_pose'
+        'mean_3d',
+            'opacity',
+            'scale',
+            'rotation', 
+            'rgb',
+            'mean_3d_refined',
+            'scale_refined',
+            'joint_zero_pose',
+            'transform_mat_neutral_pose',
+            'parents',
+            'skinning_weight'
     ]
     print("PyTorch 模型與輸入準備完成。")
 
