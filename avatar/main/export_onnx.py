@@ -3,6 +3,7 @@ from torch.onnx import register_custom_op_symbolic
 from torch.onnx.symbolic_helper import parse_args
 from pytorch3d.transforms import matrix_to_rotation_6d, rotation_6d_to_matrix, matrix_to_quaternion, quaternion_to_matrix, axis_angle_to_matrix, matrix_to_axis_angle
 from pytorch3d.ops import knn_points
+import os
 #python export_onnx.py --subject_id gyeongsik --test_epoch 4 --motion_path /home/cgvmis418/ExAvatar_to_Unity/motions/jungkook_standing_next_to_you --output_path "../data/NeuMan/data/gyeongsik/human_model_ChunkedGroupNorm_lbs.onnx"
 # --- 為 aten::sinc 定義翻譯規則 (修正版) ---
 @parse_args("v")
@@ -66,16 +67,15 @@ class ModelWrapper(torch.nn.Module):
             self.output_names = [
                     'mean_3d',
                         'scale',
-                        'rgb'
                 ]
         elif mode=="refine":
             self.output_names = [
                     'mean_3d_refined',
-                    'scale_refined',
-                        'rgb'
+                    'scale_refined'
                 ]
         elif mode=="static":
             self.output_names = [
+                        'rgb',
                     'joint_zero_pose',
                         'transform_mat_neutral_pose',
                         'parents',
@@ -190,17 +190,16 @@ class ModelWrapper(torch.nn.Module):
         elif self.mode == "no_refine":
             return (
                 mean_3d,
-                scale,
-                rgb
+                scale
             )
         elif self.mode == "refine":
             return (
                 mean_3d_refined,
-                scale_refined,
-                rgb
+                scale_refined
             )
         elif self.mode == "static":
             return (
+                rgb,
                 self.joint_zero_pose,
                 self.transform_mat_neutral_pose,
                 self.parents,
@@ -278,6 +277,23 @@ def main():
         opset_version=16, # 建議使用 11 或更高的版本
         export_params=True
     )
+    sub_model_names=["refine","no_refine","static"]
+    for sub_model_name in sub_model_names:
+        wrapped_model = ModelWrapper(tester.model,sub_model_name).cuda().eval()
+        output_names = wrapped_model.output_names 
+        root, ext = os.path.splitext(args.output_path)
+        new_path = f"{root}_{sub_model_name}{ext}"
+        torch.onnx.export(
+            wrapped_model,
+            dummy_inputs,
+            new_path,
+            input_names=input_names,
+            output_names=output_names,
+            verbose=False, # 設為 True 可以看到詳細的轉換日誌
+            opset_version=16, # 建議使用 11 或更高的版本
+            export_params=True
+        )
+        
     print("模型轉換成功！")
 
 if __name__ == "__main__":
